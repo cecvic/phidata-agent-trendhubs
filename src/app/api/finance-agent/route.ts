@@ -1,85 +1,96 @@
-import OpenAI from 'openai';
 import { NextResponse } from 'next/server';
+import { spawn } from 'child_process';
 
-if (!process.env.OPENAI_API_KEY) {
-  throw new Error('Missing OPENAI_API_KEY environment variable');
+// Helper function to run Python script and get output
+async function runPythonAgent(message: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // Create a Python process
+    const pythonProcess = spawn('python', ['-c', `
+from phi.agent import Agent
+from phi.model.openai import OpenAIChat
+from phi.tools.yfinance import YFinanceTools
+
+finance_agent = Agent(
+    name="Finance Agent",
+    model=OpenAIChat(id="gpt-4o-mini"),
+    tools=[YFinanceTools(
+        stock_price=True, 
+        analyst_recommendations=True, 
+        company_info=True, 
+        company_news=True
+    )],
+    instructions=["Use tables to display data"],
+    show_tool_calls=True,
+    markdown=True,
+)
+
+response = finance_agent.run("${message}")
+print(response.content)
+`]);
+
+    let output = '';
+    let error = '';
+
+    // Collect output
+    pythonProcess.stdout.on('data', (data) => {
+      output += data.toString();
+    });
+
+    pythonProcess.stderr.on('data', (data) => {
+      error += data.toString();
+    });
+
+    // Handle process completion
+    pythonProcess.on('close', (code) => {
+      if (code === 0) {
+        resolve(output);
+      } else {
+        reject(new Error(`Python process failed: ${error}`));
+      }
+    });
+  });
 }
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
 export async function POST(req: Request) {
-  console.log('Received request for financial analysis');
-  
   try {
     const body = await req.json();
-    console.log('Request body:', body);
-    
     const { symbol, analysisType } = body;
 
     if (!symbol) {
-      console.error('Missing symbol in request');
       return NextResponse.json(
         { error: 'Stock symbol is required' },
         { status: 400 }
       );
     }
 
-    let prompt = '';
+    // Construct appropriate message based on analysis type
+    let message = '';
     switch (analysisType) {
       case 'recommendations':
-        prompt = `Analyze and summarize the latest analyst recommendations for ${symbol}`;
+        message = `Get the latest analyst recommendations for ${symbol}`;
         break;
       case 'price':
-        prompt = `Provide a brief price analysis for ${symbol} including key metrics`;
+        message = `Get the current price and key metrics for ${symbol}`;
         break;
       case 'info':
-        prompt = `Share key company information and fundamentals for ${symbol}`;
+        message = `Get company information and fundamentals for ${symbol}`;
         break;
       case 'news':
-        prompt = `Summarize the latest important news for ${symbol}`;
+        message = `Get the latest important news for ${symbol}`;
         break;
       default:
-        console.error('Invalid analysis type:', analysisType);
-        return NextResponse.json(
-          { error: 'Invalid analysis type' },
-          { status: 400 }
-        );
+        message = `Get a comprehensive analysis for ${symbol}`;
     }
 
-    console.log('Sending request to OpenAI with prompt:', prompt);
+    // Run the Phidata agent and get response
+    const response = await runPythonAgent(message);
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: "You are a financial analyst assistant that provides clear insights about stocks and financial data. Format your response using markdown for better readability."
-        },
-        {
-          role: "user",
-          content: prompt
-        }
-      ],
-      temperature: 0.7,
-      max_tokens: 500
-    });
-
-    console.log('Received response from OpenAI');
-
-    if (!completion.choices[0]?.message?.content) {
-      throw new Error('No response content from OpenAI');
-    }
-
-    return NextResponse.json({ 
-      response: completion.choices[0].message.content 
-    });
+    return NextResponse.json({ response });
 
   } catch (error) {
     console.error('Finance agent error:', error);
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to analyze financial data' },
+      { error: 'Failed to process request' },
       { status: 500 }
     );
   }

@@ -1,5 +1,5 @@
 import React from 'react'
-import FinanceAnalysis from '../app/components/finance-analysis'
+import FinanceAnalysis from '@/finance-agent-app/src/app/components/finance-analysis'
 
 export default function Home() {
   return (
